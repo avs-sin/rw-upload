@@ -15,7 +15,7 @@ except ImportError:
     raise ImportError("The google-cloud-storage package is required. Install it using 'pip install google-cloud-storage'.")
 
 try:
-    from pyrogram import Client
+    from pyrogram import Client, filters
 except ImportError:
     raise ImportError("The pyrogram package is required. Install it using 'pip install pyrogram'.")
 
@@ -171,13 +171,11 @@ class TelegramUploader:
             try:
                 _, ext = os.path.splitext(blob.name.lower())
                 if ext in ['.jpg', '.jpeg', '.png']:
-                    await self.app.send_photo(chat_id=TARGET_CHANNEL, photo=temp_file, caption=caption)
+                    await self.app.send_photo(TARGET_CHANNEL, photo=temp_file, caption=caption)
                 elif ext in ['.mp4', '.mov', '.avi', '.mkv']:
-                    await self.app.send_video(chat_id=TARGET_CHANNEL, video=temp_file, caption=caption)
+                    await self.app.send_video(TARGET_CHANNEL, video=temp_file, caption=caption)
                 else:
-                    logging.warning(f"Unsupported file extension {ext} for file {blob.name}. Skipping upload.")
-                    os.remove(temp_file)
-                    return False
+                    await self.app.send_document(TARGET_CHANNEL, document=temp_file, caption=caption)
 
                 logging.info(f"[SUCCESS] Uploaded: {blob.name}")
                 add_sent_file(SENT_FILES_RECORD, blob.name)
