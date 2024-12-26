@@ -14,6 +14,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Debug: Print environment variables
+logger.info("Checking environment variables:")
+logger.info(f"BOT_TOKEN: {'Set' if os.getenv('BOT_TOKEN') else 'Not Set'}")
+logger.info(f"CHANNEL_ID: {'Set' if os.getenv('CHANNEL_ID') else 'Not Set'}")
+logger.info(f"API_ID: {'Set' if os.getenv('API_ID') else 'Not Set'}")
+logger.info(f"API_HASH: {'Set' if os.getenv('API_HASH') else 'Not Set'}")
+
 # Command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -72,8 +79,10 @@ def main():
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    
+    # Handle media messages using correct filter syntax
     application.add_handler(MessageHandler(
-        filters.PHOTO | filters.VIDEO | filters.DOCUMENT,
+        filters.PHOTO | filters.VIDEO | filters.Document.MimeType("*/*"),
         handle_media
     ))
 
