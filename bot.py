@@ -15,7 +15,7 @@ except ImportError:
     raise ImportError("The google-cloud-storage package is required. Install it using 'pip install google-cloud-storage'.")
 
 try:
-    from pyrogram import Client, filters
+    from pyrogram import Client
 except ImportError:
     raise ImportError("The pyrogram package is required. Install it using 'pip install pyrogram'.")
 
@@ -25,10 +25,10 @@ import pytz
 # ------------------------------ Configuration ------------------------------
 
 # API credentials for Telegram
-API_ID = "27783825"
-API_HASH = "22995583ea31fed17fa5e92b8d33c1c6"
-BOT_TOKEN = "7834378427:AAE88n5PzOFCQK-Py44YV4kvM_FYeqd6P8I"
-TARGET_CHANNEL = "pregnantpetite"
+API_ID = os.getenv("API_ID", "27783825")
+API_HASH = os.getenv("API_HASH", "22995583ea31fed17fa5e92b8d33c1c6")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7834378427:AAE88n5PzOFCQK-Py44YV4kvM_FYeqd6P8I")
+TARGET_CHANNEL = os.getenv("TARGET_CHANNEL", "pregnantpetite")
 
 # GCS Bucket and folder information
 BUCKET_NAME = "tglyon"
