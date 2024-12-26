@@ -5,9 +5,35 @@ import asyncio
 import logging
 import shutil
 import time
+import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import List
+
+# Logging Configuration first, so we can log any import errors
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
+
+# Check for Google Cloud credentials
+if not os.getenv('GOOGLE_APPLICATION_CREDENTIALS'):
+    logger.error("GOOGLE_APPLICATION_CREDENTIALS environment variable not set!")
+    try:
+        # Try to parse from environment variable as JSON
+        creds_json = os.getenv('GOOGLE_APPLICATION_CREDENTIALS_JSON')
+        if creds_json:
+            creds_dict = json.loads(creds_json)
+            temp_creds_file = "/tmp/google_creds.json"
+            with open(temp_creds_file, 'w') as f:
+                json.dump(creds_dict, f)
+            os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = temp_creds_file
+            logger.info("Successfully loaded Google credentials from environment JSON")
+    except Exception as e:
+        logger.error(f"Failed to parse Google credentials: {e}")
+        raise
 
 try:
     from google.cloud import storage
@@ -30,6 +56,12 @@ API_HASH = os.getenv("API_HASH", "22995583ea31fed17fa5e92b8d33c1c6")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7834378427:AAE88n5PzOFCQK-Py44YV4kvM_FYeqd6P8I")
 TARGET_CHANNEL = os.getenv("TARGET_CHANNEL", "pregnantpetite")
 
+logger.info("Loaded environment variables:")
+logger.info(f"API_ID: {'Set' if API_ID else 'Not Set'}")
+logger.info(f"API_HASH: {'Set' if API_HASH else 'Not Set'}")
+logger.info(f"BOT_TOKEN: {'Set' if BOT_TOKEN else 'Not Set'}")
+logger.info(f"TARGET_CHANNEL: {TARGET_CHANNEL}")
+
 # GCS Bucket and folder information
 BUCKET_NAME = "tglyon"
 FOLDERS = [
@@ -43,6 +75,7 @@ FOLDERS = [
 
 # Constants
 TEMP_DIR = "/tmp"
+os.makedirs(TEMP_DIR, exist_ok=True)  # Ensure temp directory exists
 SENT_FILES_RECORD = os.path.join(TEMP_DIR, "sent_files.txt")
 MAX_DURATION = 300  # Maximum video duration in seconds (5 minutes)
 MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB max file size for Telegram
@@ -57,13 +90,6 @@ TOTAL_CYCLES = 3
 # PST Timezone
 PST_TZ = ZoneInfo("America/Los_Angeles")
 
-# Logging Configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
-)
-
 # ------------------------------ Helper Functions ------------------------------
 
 def download_with_retry(blob, temp_file, retries=3, backoff_factor=2) -> bool:
@@ -71,15 +97,15 @@ def download_with_retry(blob, temp_file, retries=3, backoff_factor=2) -> bool:
     for attempt in range(1, retries + 1):
         try:
             blob.download_to_filename(temp_file)
-            logging.info(f"Downloaded {blob.name} to {temp_file}")
+            logger.info(f"Downloaded {blob.name} to {temp_file}")
             return True
         except Exception as e:
-            logging.error(f"Download failed for {blob.name} (Attempt {attempt}/{retries}): {e}")
+            logger.error(f"Download failed for {blob.name} (Attempt {attempt}/{retries}): {e}")
             if attempt < retries:
                 sleep_time = backoff_factor ** attempt
-                logging.info(f"Retrying in {sleep_time} seconds...")
+                logger.info(f"Retrying in {sleep_time} seconds...")
                 time.sleep(sleep_time)
-    logging.error(f"Failed to download {blob.name} after {retries} attempts.")
+    logger.error(f"Failed to download {blob.name} after {retries} attempts.")
     return False
 
 def get_caption(media_blob):
@@ -92,7 +118,7 @@ def get_caption(media_blob):
     try:
         blobs_in_folder = list(storage.Client().bucket(BUCKET_NAME).list_blobs(prefix=f"source/{folder_name}/"))
     except Exception as e:
-        logging.error(f"Error fetching blobs for caption: {e}")
+        logger.error(f"Error fetching blobs for caption: {e}")
         return f"#{folder_name}"
 
     text_blob = next((b for b in blobs_in_folder if b.name.endswith('.txt')), None)
@@ -104,15 +130,16 @@ def get_caption(media_blob):
                 with open(temp_text_file, 'r', encoding='utf-8') as f:
                     content = f.read().strip()
             except Exception as e:
-                logging.error(f"Error reading caption from {text_blob.name}: {e}")
+                logger.error(f"Error reading caption from {text_blob.name}: {e}")
                 content = ""
             finally:
-                os.remove(temp_text_file)
+                if os.path.exists(temp_text_file):
+                    os.remove(temp_text_file)
 
             if content:
                 return f"{content[:150]} #{folder_name}"
 
-    logging.warning(f"No caption content found for {media_blob.name}. Using default caption.")
+    logger.warning(f"No caption content found for {media_blob.name}. Using default caption.")
     return f"#{folder_name}"
 
 def load_sent_files(record_path: str) -> set:
@@ -122,7 +149,7 @@ def load_sent_files(record_path: str) -> set:
             with open(record_path, "r") as f:
                 return set(f.read().splitlines())
         except Exception as e:
-            logging.error(f"Error loading sent files record: {e}")
+            logger.error(f"Error loading sent files record: {e}")
     return set()
 
 def add_sent_file(record_path: str, file_path: str):
@@ -130,66 +157,84 @@ def add_sent_file(record_path: str, file_path: str):
     try:
         with open(record_path, "a") as f:
             f.write(file_path + "\n")
-        logging.info(f"Marked {file_path} as sent.")
+        logger.info(f"Marked {file_path} as sent.")
     except Exception as e:
-        logging.error(f"Error updating sent files record: {e}")
+        logger.error(f"Error updating sent files record: {e}")
 
 # ------------------------------ Main Class ------------------------------
 
 class TelegramUploader:
     def __init__(self):
-        self.app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-        self.storage_client = storage.Client()
-        self.bucket = self.storage_client.bucket(BUCKET_NAME)
+        session_name = f"uploader_bot_{int(time.time())}"
+        self.app = Client(
+            session_name,
+            api_id=API_ID,
+            api_hash=API_HASH,
+            bot_token=BOT_TOKEN,
+            in_memory=True
+        )
+        logger.info(f"Initializing Telegram client with session: {session_name}")
+        
+        try:
+            self.storage_client = storage.Client()
+            self.bucket = self.storage_client.bucket(BUCKET_NAME)
+            logger.info(f"Successfully connected to Google Cloud Storage bucket: {BUCKET_NAME}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Google Cloud Storage: {e}")
+            raise
+            
         self.sent_files = load_sent_files(SENT_FILES_RECORD)
+        logger.info(f"Loaded {len(self.sent_files)} sent files from record")
 
     def get_files_from_gcs(self, prefix: str) -> List[storage.Blob]:
         """Fetches files from a GCS bucket with a given prefix."""
         try:
             blobs = list(self.bucket.list_blobs(prefix=prefix))
             blobs = [blob for blob in blobs if not blob.name.endswith('.DS_Store')]
-            logging.info(f"Fetched {len(blobs)} files from {prefix}")
+            logger.info(f"Fetched {len(blobs)} files from {prefix}")
             return blobs
         except Exception as e:
-            logging.error(f"Error fetching files from {prefix}: {e}")
+            logger.error(f"Error fetching files from {prefix}: {e}")
             return []
 
     async def upload_file(self, blob: storage.Blob) -> bool:
         """Downloads and uploads a file to Telegram."""
         if blob.size > MAX_FILE_SIZE:
-            logging.warning(f"File {blob.name} exceeds maximum size limit of {MAX_FILE_SIZE/(1024*1024)}MB")
+            logger.warning(f"File {blob.name} exceeds maximum size limit of {MAX_FILE_SIZE/(1024*1024)}MB")
             return False
 
         temp_file = os.path.join(TEMP_DIR, f"{int(time.time())}_{blob.name.replace('/', '_')}")
-        if not download_with_retry(blob, temp_file):
-            return False
+        try:
+            if not download_with_retry(blob, temp_file):
+                return False
 
-        caption = get_caption(blob)
-        logging.info(f"Using caption: {caption}")
+            caption = get_caption(blob)
+            logger.info(f"Using caption: {caption}")
 
-        for attempt in range(MAX_RETRIES):
-            try:
-                _, ext = os.path.splitext(blob.name.lower())
-                if ext in ['.jpg', '.jpeg', '.png']:
-                    await self.app.send_photo(TARGET_CHANNEL, photo=temp_file, caption=caption)
-                elif ext in ['.mp4', '.mov', '.avi', '.mkv']:
-                    await self.app.send_video(TARGET_CHANNEL, video=temp_file, caption=caption)
-                else:
-                    await self.app.send_document(TARGET_CHANNEL, document=temp_file, caption=caption)
+            for attempt in range(MAX_RETRIES):
+                try:
+                    _, ext = os.path.splitext(blob.name.lower())
+                    if ext in ['.jpg', '.jpeg', '.png']:
+                        await self.app.send_photo(TARGET_CHANNEL, photo=temp_file, caption=caption)
+                    elif ext in ['.mp4', '.mov', '.avi', '.mkv']:
+                        await self.app.send_video(TARGET_CHANNEL, video=temp_file, caption=caption)
+                    else:
+                        await self.app.send_document(TARGET_CHANNEL, document=temp_file, caption=caption)
 
-                logging.info(f"[SUCCESS] Uploaded: {blob.name}")
-                add_sent_file(SENT_FILES_RECORD, blob.name)
+                    logger.info(f"[SUCCESS] Uploaded: {blob.name}")
+                    add_sent_file(SENT_FILES_RECORD, blob.name)
+                    return True
+                except Exception as e:
+                    if attempt < MAX_RETRIES - 1:
+                        logger.warning(f"Upload attempt {attempt + 1} failed for {blob.name}: {e}. Retrying...")
+                        await asyncio.sleep(2 ** attempt)
+                    else:
+                        logger.error(f"[ERROR] Upload failed after {MAX_RETRIES} attempts for {blob.name}: {e}")
+        finally:
+            if os.path.exists(temp_file):
                 os.remove(temp_file)
-                return True
-            except Exception as e:
-                if attempt < MAX_RETRIES - 1:
-                    logging.warning(f"Upload attempt {attempt + 1} failed for {blob.name}: {e}. Retrying...")
-                    await asyncio.sleep(2 ** attempt)
-                else:
-                    logging.error(f"[ERROR] Upload failed after {MAX_RETRIES} attempts for {blob.name}: {e}")
-
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+                logger.debug(f"Cleaned up temporary file: {temp_file}")
+        
         return False
 
     async def run_cycle(self, cycle_number: int):
@@ -197,7 +242,7 @@ class TelegramUploader:
         random.shuffle(FOLDERS)
         uploads_done = 0
 
-        logging.info(f"--- Starting Cycle {cycle_number + 1} ---")
+        logger.info(f"--- Starting Cycle {cycle_number + 1} ---")
 
         for folder in FOLDERS:
             if uploads_done >= UPLOADS_PER_CYCLE:
@@ -210,36 +255,38 @@ class TelegramUploader:
                 success = await self.upload_file(blob)
                 if success:
                     uploads_done += 1
-                    logging.info(f"Uploaded {blob.name} from folder {folder}")
+                    logger.info(f"Uploaded {blob.name} from folder {folder}")
                     if uploads_done >= UPLOADS_PER_CYCLE:
                         break
+                    logger.info(f"Waiting {INTER_UPLOAD_DELAY} seconds before next upload...")
                     await asyncio.sleep(INTER_UPLOAD_DELAY)
 
         if uploads_done == 0:
-            logging.warning(f"No suitable files were uploaded in cycle {cycle_number + 1}.")
+            logger.warning(f"No suitable files were uploaded in cycle {cycle_number + 1}.")
         else:
-            logging.info(f"--- Cycle {cycle_number + 1} Complete: {uploads_done} uploads done ---")
+            logger.info(f"--- Cycle {cycle_number + 1} Complete: {uploads_done} uploads done ---")
 
     async def run(self):
         """Runs the uploader for a fixed number of cycles."""
+        logger.info("Starting Telegram Uploader...")
         async with self.app:
             for cycle in range(TOTAL_CYCLES):
                 await self.run_cycle(cycle)
                 if cycle < TOTAL_CYCLES - 1:
-                    logging.info(f"Waiting for {CYCLE_DELAY / 60} minutes before next cycle.")
+                    logger.info(f"Waiting {CYCLE_DELAY / 60} minutes before next cycle.")
                     await asyncio.sleep(CYCLE_DELAY)
-            logging.info("All cycles completed. Exiting uploader.")
+            logger.info("All cycles completed. Exiting uploader.")
 
 # ------------------------------ Execution ------------------------------
 
 async def main():
-    logging.info("[START] Starting Telegram Uploader for 3 cycles...")
-    uploader = TelegramUploader()
-
+    logger.info("[START] Starting Telegram Uploader for 3 cycles...")
     try:
+        uploader = TelegramUploader()
         await uploader.run()
     except Exception as e:
-        logging.error(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e}", exc_info=True)
+        raise
 
 if __name__ == "__main__":
     asyncio.run(main()) 
